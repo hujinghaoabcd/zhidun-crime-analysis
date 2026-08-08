@@ -1,0 +1,17 @@
+{
+  "source": "china-crime-paper",
+  "label": "论文真实数据（裁判文书整理，全国 2000-2019）",
+  "article": "Zhang, Y., Kwan, M.P. & Fang, L. An LLM driven dataset on the spatiotemporal distributions of street and neighborhood crime in China. Sci Data 12, 467 (2025).",
+  "articleUrl": "https://doi.org/10.1038/s41597-025-04757-8",
+  "dataUrl": "https://figshare.com/articles/dataset/_b_A_dataset_on_the_spatiotemporal_distributions_of_street_and_neighborhood_crime_in_China_b_/28106939",
+  "records": 1027842,
+  "sampleRecords": 120000,
+  "provinces": 32,
+  "cities": 705,
+  "years": [
+    2000,
+    2019
+  ],
+  "privacy": "已移除被告/被害人姓名与判决全文等敏感字段",
+  "generatedAt": "2026-08-08T12:22:32.541Z"
+}

@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# local env files
+.env.local
+.env.*.local
+
+# logs
+*.log
+logs/
+
+# server data (large raw datasets are kept locally, not in the repo)
+server/data/raw/
+
+# editor and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# python
+__pycache__/
+*.pyc
