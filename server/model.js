@@ -1,22 +1,24 @@
 'use strict';
 
 /**
- * 全国犯罪时空预测模型
+ * 全国犯罪时空预测模型（演示用 Lite 实现）
  *
- * 方法（STL-Lite + 空间平滑）：
- *  1. 对每个省/市按 2000-01 ~ 2019-12 构造月度序列
- *  2. 趋势项：12 个月滑动平均（Trailing MA）
- *  3. 季节项：月度比例（相对趋势）的多年均值
- *  4. 趋势外推：近 24 个月线性回归，按 1..months 步长衰减外推
- *  5. 空间平滑：邻近省份/城市近 3 个月残差的距离加权修正
- *  6. 四色分级：相对历史均值的风险倍数 + 趋势方向
+ * 数据口径：
+ *  - 省级：直接使用 2000-01 ~ 2018-12 的月度聚合数据。
+ *  - 地市级：原始聚合仅有年度总量，因此按所在省份当年的月度季节分布
+ *    将地市年度总量分配为“估算月度序列”，只用于演示月尺度下钻。
+ *  - 2019 年原始数据明显不完整，不参与模型拟合；预测演示从 2019-01 开始。
+ *
+ * 方法：季节指数 + 趋势外推 + 轻量空间邻域平滑。
+ * 该模型用于教学/演示，不用于真实警务决策。
  */
 
 const data = require('./national-data');
 
 const START_YEAR = 2000;
-const END_YEAR = 2019;
-const N_MONTHS = (END_YEAR - START_YEAR + 1) * 12;
+const MODEL_END_YEAR = 2018;
+const N_MONTHS = (MODEL_END_YEAR - START_YEAR + 1) * 12;
+const FORECAST_START_INDEX = N_MONTHS;
 
 const LEVELS = {
   red: { label: '红色预警', color: '#d4380d' },
@@ -24,6 +26,14 @@ const LEVELS = {
   yellow: { label: '黄色预警', color: '#fadb14' },
   green: { label: '正常', color: '#52c41a' }
 };
+
+function clamp(v, lo, hi) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+function mean(arr) {
+  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+}
 
 function monthIndex(year, month) {
   return (year - START_YEAR) * 12 + (month - 1);
@@ -36,69 +46,76 @@ function monthAt(idx) {
   };
 }
 
-function buildMonthlySeries(records, idField) {
-  // records: [{id, year, month, total}]
-  const map = new Map();
-  for (const r of records) {
-    if (!map.has(r[idField])) map.set(r[idField], new Array(N_MONTHS).fill(0));
-    const arr = map.get(r[idField]);
-    const idx = monthIndex(r.year, r.month);
-    if (idx >= 0 && idx < N_MONTHS) arr[idx] += r.total;
+function provinceMonthlySeries(adcode, endYear = MODEL_END_YEAR) {
+  const n = (endYear - START_YEAR + 1) * 12;
+  const out = new Array(n).fill(0);
+  for (const row of data.aggregates.byProvinceMonth || []) {
+    if (row.adcode !== adcode || row.year < START_YEAR || row.year > endYear) continue;
+    const idx = monthIndex(row.year, row.month);
+    if (idx >= 0 && idx < n) out[idx] += Number(row.total) || 0;
   }
-  return map;
+  return out;
 }
 
-function movingTrend(series, win = 12) {
-  const t = new Array(series.length).fill(0);
-  let sum = 0;
-  for (let i = 0; i < series.length; i++) {
-    sum += series[i];
-    if (i >= win) sum -= series[i - win];
-    t[i] = i >= win - 1 ? sum / win : (i + 1 > 0 ? sum / (i + 1) : 0);
-  }
-  return t;
+function nationalMonthlyShares(year) {
+  const rows = (data.aggregates.byMonth || []).filter((r) => r.year === year);
+  const total = rows.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  if (!total) return new Array(12).fill(1 / 12);
+  const byMonth = new Array(12).fill(0);
+  for (const row of rows) byMonth[row.month - 1] = (Number(row.total) || 0) / total;
+  return byMonth;
 }
 
-function seasonalIndices(series, trend) {
-  const sums = new Array(12).fill(0);
-  const counts = new Array(12).fill(0);
-  for (let i = 0; i < series.length; i++) {
-    const m = i % 12;
-    if (trend[i] > 0) {
-      sums[m] += series[i] / trend[i];
-      counts[m] += 1;
-    }
-  }
-  const idx = new Array(12);
-  const mean = sums.reduce((a, b, i) => a + (counts[i] ? b / counts[i] : 0), 0) / 12;
-  for (let m = 0; m < 12; m++) {
-    const v = counts[m] ? sums[m] / counts[m] : 1;
-    idx[m] = mean > 0 ? v / mean : 1;
-  }
-  return idx;
+function provinceMonthlyShares(adcode, year) {
+  const rows = (data.aggregates.byProvinceMonth || []).filter(
+    (r) => r.adcode === adcode && r.year === year
+  );
+  const total = rows.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  if (!total) return nationalMonthlyShares(year);
+  const shares = new Array(12).fill(0);
+  for (const row of rows) shares[row.month - 1] = (Number(row.total) || 0) / total;
+  return shares;
 }
 
-function linreg(y) {
-  // 简单线性回归 y = a + b*x
-  const n = y.length;
-  if (n < 2) return { a: y[0] || 0, b: 0 };
-  let sx = 0;
-  let sy = 0;
-  let sxx = 0;
-  let sxy = 0;
-  for (let i = 0; i < n; i++) {
-    sx += i;
-    sy += y[i];
-    sxx += i * i;
-    sxy += i * y[i];
+function cityMonthlySeries(adcode, endYear = MODEL_END_YEAR) {
+  const city = data.cityByAdcode.get(adcode);
+  if (!city) return null;
+
+  const annualRows = (data.aggregates.byCityYear || [])
+    .filter((r) => r.adcode === adcode && r.year >= START_YEAR && r.year <= endYear)
+    .sort((a, b) => a.year - b.year);
+  if (!annualRows.length) return null;
+
+  const annual = new Map(annualRows.map((r) => [r.year, Number(r.total) || 0]));
+  const out = [];
+  for (let year = START_YEAR; year <= endYear; year++) {
+    const total = annual.get(year) || 0;
+    const shares = provinceMonthlyShares(city.provinceAdcode, year);
+    for (let month = 0; month < 12; month++) out.push(total * shares[month]);
   }
-  const denom = n * sxx - sx * sx;
-  const b = denom ? (n * sxy - sx * sy) / denom : 0;
-  const a = (sy - b * sx) / n;
-  return { a, b };
+  return out;
 }
 
-function distKm(a, b) {
+function seriesFor(level, id, endYear = MODEL_END_YEAR) {
+  return level === 'city'
+    ? cityMonthlySeries(id, endYear)
+    : provinceMonthlySeries(id, endYear);
+}
+
+function regionInfo(level, id) {
+  return level === 'city'
+    ? data.cityByAdcode.get(id) || null
+    : data.provinceByAdcode.get(id) || null;
+}
+
+function regionCenter(level, id) {
+  const info = regionInfo(level, id);
+  return info && Array.isArray(info.center)
+    ? { lng: info.center[0], lat: info.center[1] }
+    : null;
+}
+
+function haversineKm(a, b) {
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;
   const dLng = ((b.lng - a.lng) * Math.PI) / 180;
@@ -110,288 +127,243 @@ function distKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-function regionInfo(level, id) {
-  if (level === 'province') return data.provinceByAdcode.get(id) || null;
-  return data.cityByAdcode.get(id) || null;
+function movingTrend(series, win = 12) {
+  const out = new Array(series.length).fill(0);
+  let sum = 0;
+  for (let i = 0; i < series.length; i++) {
+    sum += series[i];
+    if (i >= win) sum -= series[i - win];
+    out[i] = sum / Math.min(win, i + 1);
+  }
+  return out;
 }
 
-function regionCenter(level, id) {
-  const info = regionInfo(level, id);
-  return info ? { lat: info.center[1], lng: info.center[0] } : null;
+function seasonalIndices(series, trend) {
+  const sums = new Array(12).fill(0);
+  const counts = new Array(12).fill(0);
+  for (let i = 12; i < series.length; i++) {
+    const baseline = trend[i];
+    if (!(baseline > 0)) continue;
+    const m = i % 12;
+    sums[m] += series[i] / baseline;
+    counts[m] += 1;
+  }
+  const raw = sums.map((v, m) => (counts[m] ? v / counts[m] : 1));
+  const avg = mean(raw) || 1;
+  return raw.map((v) => v / avg);
 }
 
-function spatialAdjust(level, id, series, trend, monthsBack = 3) {
-  const info = regionInfo(level, id);
-  if (!info) return 0;
+function linearSlope(values) {
+  const n = values.length;
+  if (n < 2) return 0;
+  const xMean = (n - 1) / 2;
+  const yMean = mean(values);
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (i - xMean) * (values[i] - yMean);
+    den += (i - xMean) ** 2;
+  }
+  return den ? num / den : 0;
+}
+
+function neighborIds(level, id) {
+  if (level === 'province') return data.PROVINCE_NEIGHBORS[id] || [];
+  const city = data.cityByAdcode.get(id);
+  if (!city) return [];
   const center = regionCenter(level, id);
-  // 候选邻居：邻接省，或同省其它城市
-  let neighborIds = [];
-  if (level === 'province') {
-    neighborIds = data.PROVINCE_NEIGHBORS[id] || [];
-  } else {
-    const city = data.cityByAdcode.get(id);
-    if (city) {
-      neighborIds = (data.cityByProvince.get(city.provinceAdcode) || [])
-        .filter((c) => c.adcode !== id)
-        .slice(0, 6)
-        .map((c) => c.adcode);
-    }
-  }
-  if (!neighborIds.length || !center) return 0;
-
-  const neighborSeriesMap = level === 'province'
-    ? buildMonthlySeries(data.aggregates.byProvinceMonth, 'adcode')
-    : buildMonthlySeries(
-        data.aggregates.byCityYear.map((r) => ({ adcode: r.adcode, year: r.year, month: 1, total: r.total })),
-        'adcode'
-      );
-
-  let wsum = 0;
-  let wtotal = 0;
-  for (const nid of neighborIds) {
-    const nCenter = regionCenter(level, nid);
-    if (!nCenter) continue;
-    const nSeries = neighborSeriesMap.get(nid);
-    if (!nSeries || nSeries.reduce((a, b) => a + b, 0) < 3) continue;
-    const nTrend = movingTrend(nSeries, level === 'province' ? 12 : 3);
-    const nSeasonal = seasonalIndices(nSeries, nTrend);
-    // 邻居最近 12 个月实际/期望偏差率
-    const periods = 12;
-    let actual = 0;
-    let expected = 0;
-    for (let k = 1; k <= periods; k++) {
-      const idx = nSeries.length - k;
-      if (idx < 0) continue;
-      actual += nSeries[idx];
-      expected += Math.max(0.1, nTrend[idx]) * nSeasonal[idx % 12];
-    }
-    const ratio = expected > 0 ? actual / expected : 1;
-    const d = Math.max(30, distKm(center, nCenter));
-    const w = 1 / (d * d);
-    wsum += w * ratio;
-    wtotal += w;
-  }
-  if (!wtotal) return 0;
-  const factor = wsum / wtotal;
-  return (factor - 1) * Math.max(series[series.length - 1] || 0, 1);
+  const peers = (data.cityByProvince.get(city.provinceAdcode) || [])
+    .filter((c) => c.adcode !== id)
+    .map((c) => {
+      const cCenter = regionCenter('city', c.adcode);
+      return {
+        id: c.adcode,
+        distance: center && cCenter ? haversineKm(center, cCenter) : Infinity
+      };
+    })
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, 6);
+  return peers.map((x) => x.id);
 }
 
-function riskLevel(value, history, slope, strict) {
-  if (history.length === 0) return 'green';
-  const mean = history.reduce((a, b) => a + b, 0) / history.length;
-  const std = Math.sqrt(
-    history.reduce((a, b) => a + (b - mean) ** 2, 0) / history.length
-  ) || 1;
-  const ratio = value / Math.max(mean, 0.5);
-  const percentile = history.filter((x) => x <= value).length / history.length;
-  let lv;
-  if (strict) {
-    if (ratio >= 2.4 || value >= mean + 3.2 * std) lv = 'red';
-    else if (ratio >= 1.7 || value >= mean + 2.2 * std) lv = 'orange';
-    else if (ratio >= 1.25) lv = 'yellow';
-    else lv = 'green';
-  } else if (ratio >= 2.0 || percentile >= 0.93 || value >= mean + 2.4 * std) lv = 'red';
-  else if (ratio >= 1.45 || percentile >= 0.78 || value >= mean + 1.4 * std) lv = 'orange';
-  else if (ratio >= 1.1 || percentile >= 0.55) lv = 'yellow';
-  else lv = 'green';
-  // 趋势上行升一级，下行降一级
-  if (slope > 0.02 && lv !== 'red') lv = lv === 'green' ? 'yellow' : lv === 'yellow' ? 'orange' : 'red';
-  if (slope < -0.02 && lv !== 'green') lv = lv === 'red' ? 'orange' : lv === 'orange' ? 'yellow' : 'green';
-  return lv;
+function spatialFactor(level, id) {
+  const center = regionCenter(level, id);
+  if (!center) return 1;
+  let weighted = 0;
+  let weights = 0;
+
+  for (const nid of neighborIds(level, id)) {
+    const s = seriesFor(level, nid);
+    const nCenter = regionCenter(level, nid);
+    if (!s || !nCenter || s.length < 12) continue;
+    const recent = mean(s.slice(-6));
+    const prior = mean(s.slice(-12, -6));
+    if (!(prior > 0)) continue;
+    const growth = clamp(recent / prior, 0.6, 1.4);
+    const distance = Math.max(30, haversineKm(center, nCenter));
+    const w = 1 / (distance * distance);
+    weighted += growth * w;
+    weights += w;
+  }
+  return weights ? clamp(weighted / weights, 0.8, 1.2) : 1;
+}
+
+function coreForecast(series, months, spatial = 1) {
+  if (!series || !series.length) return [];
+  const trend = movingTrend(series, 12);
+  const seasonal = seasonalIndices(series, trend);
+  const recentTrend = trend.slice(-24);
+  const lastTrend = trend[trend.length - 1] || mean(series.slice(-12)) || 1;
+  const slopeAbs = linearSlope(recentTrend);
+  const slopePerMonth = clamp(slopeAbs / Math.max(lastTrend, 1), -0.025, 0.025);
+  const out = [];
+
+  for (let k = 1; k <= months; k++) {
+    const targetIdx = series.length - 1 + k;
+    const month = targetIdx % 12;
+    const trendValue = Math.max(0, lastTrend * (1 + slopePerMonth * k));
+    const spatialAdjustment = 1 + (spatial - 1) * 0.15;
+    out.push(Math.max(0, trendValue * seasonal[month] * spatialAdjustment));
+  }
+  return { values: out, slopePerMonth };
+}
+
+function riskLevel(value, series, targetMonth) {
+  const comparable = [];
+  for (let i = targetMonth; i < series.length; i += 12) {
+    if (series[i] > 0) comparable.push(series[i]);
+  }
+  const history = comparable.length >= 3 ? comparable : series.filter((x) => x > 0);
+  if (!history.length) return 'green';
+  const avg = mean(history);
+  const std = Math.sqrt(mean(history.map((x) => (x - avg) ** 2))) || 1;
+  const ratio = value / Math.max(avg, 0.5);
+  if (ratio >= 1.8 || value >= avg + 2.5 * std) return 'red';
+  if (ratio >= 1.4 || value >= avg + 1.6 * std) return 'orange';
+  if (ratio >= 1.12 || value >= avg + 0.8 * std) return 'yellow';
+  return 'green';
 }
 
 function forecastRegion(level, id, months) {
   const info = regionInfo(level, id);
-  const name = info ? info.name : String(id);
-  const center = regionCenter(level, id);
+  const series = seriesFor(level, id);
+  if (!info || !series || !series.some((x) => x > 0)) return null;
 
-  let annual = null;
-  if (level === 'city') {
-    // 地市级：使用年度序列
-    const records = data.aggregates.byCityYear
-      .filter((r) => r.adcode === id && r.year >= 2000 && r.year <= 2019)
-      .sort((a, b) => a.year - b.year);
-    if (!records.length) return null;
-    const values = records.map((r) => r.total);
-    if (values.reduce((a, b) => a + b, 0) === 0) return null;
-    const trend = movingTrend(values, 3);
-    const lastBaseline = values.slice(-3).reduce((a, b) => a + b, 0) / Math.min(3, values.slice(-3).length);
-    const trendRecent = trend.slice(-8);
-    const { b } = linreg(trendRecent);
-    const slopePerYear = b / Math.max(trend[trend.length - 1] || lastBaseline, 1);
-    const lastYear = records[records.length - 1].year;
-    const forecast = [];
-    const recentVals = values.slice(-5);
-    const meanRecent = recentVals.length
-      ? recentVals.reduce((a, b) => a + b, 0) / recentVals.length
-      : lastBaseline;
-    for (let k = 1; k <= months; k++) {
-      const base = Math.max(lastBaseline, 1) * (1 + slopePerYear * k * 0.8);
-      const value = Math.min(
-        Math.max(0, Math.round(base)),
-        Math.max(5, Math.round(Math.max(lastBaseline, 1) * 3.2))
-      );
-      const ratio = value / Math.max(meanRecent, 1);
-      let lv = ratio >= 1.35 ? 'red' : ratio >= 1.18 ? 'orange' : ratio >= 1.06 ? 'yellow' : 'green';
-      if (slopePerYear > 0.05 && lv !== 'red') lv = lv === 'orange' ? 'red' : lv === 'yellow' ? 'orange' : lv;
-      if (slopePerYear < -0.03 && lv !== 'green') lv = lv === 'red' ? 'orange' : lv === 'orange' ? 'yellow' : 'green';
-      forecast.push({
-        year: lastYear + k,
-        month: 1,
-        value,
-        changePct: lastBaseline > 0 ? Math.round(((value - lastBaseline) / lastBaseline) * 100) : 100,
-        level: lv,
-        color: LEVELS[lv].color,
-        label: LEVELS[lv].label
-      });
-    }
-    return {
-      id,
-      name,
-      provinceAdcode: records[0].provinceAdcode,
-      center,
-      historyTotal: values.reduce((a, b) => a + b, 0),
-      lastValue: Math.round(lastBaseline),
-      trendPct: Math.round(slopePerYear * 100),
-      forecast
-    };
-  }
-
-  const records = data.aggregates.byProvinceMonth.filter((r) => r.adcode === id);
-  if (!records.length) return null;
-
-  const seriesMap = buildMonthlySeries(records, 'adcode');
-  const series = seriesMap.get(id);
-  if (!series || series.reduce((a, b) => a + b, 0) === 0) return null;
-
-  const trend = movingTrend(series, 12);
-  const seasonal = seasonalIndices(series, trend);
-  const lastTrend = trend[N_MONTHS - 1] || series[N_MONTHS - 1] || 1;
-  // 近期基准：近 12 个月均值（避免数据收集截止导致的尾部缺失失真）
-  const recent = series.slice(-12);
-  const lastBaseline = recent.length
-    ? recent.reduce((a, b) => a + b, 0) / recent.length
-    : series[N_MONTHS - 1] || 0;
-
-  // 近 24 个月趋势回归
-  const trendRecent = [];
-  for (let i = Math.max(0, N_MONTHS - 24); i < N_MONTHS; i++) trendRecent.push(trend[i] || 0);
-  const { b } = linreg(trendRecent);
-  const slopePerMonth = b / Math.max(lastTrend, 1);
-
-  const forecast = [];
-  for (let k = 1; k <= months; k++) {
-    const targetIdx = N_MONTHS - 1 + k;
-    const m = targetIdx % 12;
-    let base = Math.max(lastBaseline, 1) * seasonal[m] * (1 + slopePerMonth * k * 0.5);
-    base = Math.max(0, base);
-    // 空间修正（小幅）
-    const adjust = spatialAdjust(level, id, series, trend);
-    const value = Math.min(
-      Math.max(0, Math.round(base + adjust * 0.15)),
-      Math.max(5, Math.round(Math.max(lastBaseline, 1) * 4))
-    );
-    const last = Math.round(lastBaseline);
-    const changePct = last > 0 ? Math.round(((value - last) / last) * 100) : 100;
-    const lv = riskLevel(value, series.filter((x) => x > 0 || true), slopePerMonth);
+  const result = coreForecast(series, months, spatialFactor(level, id));
+  const forecast = result.values.map((raw, i) => {
+    const targetIdx = FORECAST_START_INDEX + i;
     const tm = monthAt(targetIdx);
-    forecast.push({
+    const value = Math.round(raw);
+    const previousYear = series[targetIdx - 12] || 0;
+    const lv = riskLevel(value, series, targetIdx % 12);
+    return {
       year: tm.year,
       month: tm.month,
       value,
-      changePct,
+      changePct: previousYear > 0 ? Math.round(((value - previousYear) / previousYear) * 100) : 0,
       level: lv,
       color: LEVELS[lv].color,
       label: LEVELS[lv].label
-    });
-  }
+    };
+  });
 
-    return {
-      id,
-      name,
-      provinceAdcode: id,
-      center,
-    historyTotal: series.reduce((a, b) => a + b, 0),
-    lastValue: Math.round(lastBaseline),
-    trendPct: Math.round(slopePerMonth * 1200), // 年化趋势%
+  return {
+    id,
+    name: info.name,
+    provinceAdcode: level === 'city' ? info.provinceAdcode : id,
+    center: regionCenter(level, id),
+    historyTotal: Math.round(series.reduce((a, b) => a + b, 0)),
+    lastValue: Math.round(series[series.length - 1] || 0),
+    trendPct: Math.round(result.slopePerMonth * 1200),
+    estimatedMonthly: level === 'city',
     forecast
   };
 }
 
-function holdoutQuality(level) {
-  // 用 2018-01 ~ 2018-12（数据完整年份）做滚动回测
-  let totalErr = 0;
-  let totalObs = 0;
+function mape(pred, actual) {
+  let total = 0;
   let n = 0;
-  const records = level === 'province'
-    ? data.aggregates.byProvinceMonth
-    : data.aggregates.byCityYear.map((r) => ({ adcode: r.adcode, year: r.year, month: 1, total: r.total }));
-  const ids = [...new Set(records.map((r) => r.adcode))].slice(0, level === 'province' ? 31 : 80);
-  const map = buildMonthlySeries(records, 'adcode');
-  for (const id of ids) {
-    const series = map.get(id);
-    if (!series) continue;
-    const start = monthIndex(2018, 1);
-    const end = monthIndex(2018, 12);
-    for (let t = start; t <= end; t++) {
-      const hist = series.slice(0, t);
-      if (hist.reduce((a, b) => a + b, 0) < 5) continue;
-      const trend = movingTrend(hist, 12);
-      const seasonal = seasonalIndices(hist, trend);
-      const lastT = trend[t - 1] || hist[t - 1] || 0;
-      const pred = lastT * seasonal[t % 12];
-      const obs = series[t];
-      totalErr += Math.abs(obs - pred);
-      totalObs += Math.abs(obs);
-      n += 1;
-    }
+  for (let i = 0; i < Math.min(pred.length, actual.length); i++) {
+    if (!(actual[i] > 0)) continue;
+    total += Math.abs((pred[i] - actual[i]) / actual[i]);
+    n += 1;
   }
-  const mape = totalObs > 0 ? (totalErr / totalObs) * 100 : null;
-  const acc = mape === null ? null : Math.max(0, 100 - mape);
+  return n ? (total / n) * 100 : null;
+}
+
+function holdoutQuality(level) {
+  if (level === 'city') {
+    return {
+      window: '地市月度序列由年度总量按省级月度分布估算，不提供独立月度回测精度',
+      samples: 0,
+      mape: null,
+      accuracy: null
+    };
+  }
+
+  const holdoutYear = 2018;
+  const trainEndYear = holdoutYear - 1;
+  let sum = 0;
+  let samples = 0;
+
+  for (const row of data.aggregates.byProvince || []) {
+    if (!(row.adcode > 0)) continue;
+    const full = provinceMonthlySeries(row.adcode, holdoutYear);
+    const train = provinceMonthlySeries(row.adcode, trainEndYear);
+    const actual = full.slice(-12);
+    if (!train.some((x) => x > 0) || !actual.some((x) => x > 0)) continue;
+    const pred = coreForecast(train, 12, 1).values;
+    const score = mape(pred, actual);
+    if (score === null || !Number.isFinite(score)) continue;
+    sum += score;
+    samples += 1;
+  }
+
+  const score = samples ? sum / samples : null;
   return {
-    window: '2018-01 ~ 2018-12 滚动回测',
-    samples: n,
-    mape: mape === null ? null : Number(mape.toFixed(1)),
-    accuracy: acc === null ? null : Number(acc.toFixed(1))
+    window: '2018-01 ~ 2018-12 留出回测（训练截至 2017-12）',
+    samples,
+    mape: score === null ? null : Number(score.toFixed(1)),
+    accuracy: score === null ? null : Number(Math.max(0, 100 - score).toFixed(1))
   };
 }
 
 function predict(opts = {}) {
-  const level = opts.level || 'province';
+  const level = opts.level === 'city' ? 'city' : 'province';
   const months = Math.min(6, Math.max(1, Number(opts.months || 3)));
-  const top = Number(opts.top || 0);
+  const top = Math.max(0, Number(opts.top || 0));
   const ids = level === 'province'
-    ? data.aggregates.byProvince.map((x) => x.adcode)
-    : [...new Set(data.aggregates.byCity.filter((x) => x.adcode > 0).map((x) => x.adcode))];
+    ? (data.aggregates.byProvince || []).filter((x) => x.adcode > 0).map((x) => x.adcode)
+    : [...new Set((data.aggregates.byCity || []).filter((x) => x.adcode > 0).map((x) => x.adcode))];
 
   let items = ids
     .map((id) => forecastRegion(level, id, months))
     .filter(Boolean)
     .sort((a, b) => b.forecast[0].value - a.forecast[0].value);
-
   if (top > 0) items = items.slice(0, top);
 
-  const firstMonth = monthAt(N_MONTHS);
-  const totalForecast = items.reduce((s, x) => s + (x.forecast[0] ? x.forecast[0].value : 0), 0);
+  const totalForecast = items.reduce((s, x) => s + (x.forecast[0]?.value || 0), 0);
   const totalLast = items.reduce((s, x) => s + x.lastValue, 0);
-  const redCount = items.filter((x) => x.forecast[0].level === 'red').length;
-  const orangeCount = items.filter((x) => x.forecast[0].level === 'orange').length;
-  const yellowCount = items.filter((x) => x.forecast[0].level === 'yellow').length;
+  const count = (lv) => items.filter((x) => x.forecast[0]?.level === lv).length;
+  const firstMonth = monthAt(FORECAST_START_INDEX);
 
   return {
     generatedAt: new Date().toISOString(),
-    model: 'STL-Lite + 空间邻域平滑 + 趋势外推',
+    model: 'Seasonal-Trend Lite + 空间邻域平滑',
     level,
+    timeScale: 'month',
     months,
+    trainingThrough: `${MODEL_END_YEAR}-12`,
     forecastFrom: `${firstMonth.year}-${String(firstMonth.month).padStart(2, '0')}`,
+    cityMonthlyEstimated: level === 'city',
     quality: holdoutQuality(level),
     summary: {
       totalForecast,
       changePct: totalLast > 0 ? Math.round(((totalForecast - totalLast) / totalLast) * 100) : 0,
-      redCount,
-      orangeCount,
-      yellowCount,
-      normalCount: items.length - redCount - orangeCount - yellowCount,
+      redCount: count('red'),
+      orangeCount: count('orange'),
+      yellowCount: count('yellow'),
+      normalCount: count('green'),
       regions: items.length
     },
     items
@@ -399,32 +371,35 @@ function predict(opts = {}) {
 }
 
 function seriesForRegion(level, id) {
-  if (Number(id) === 0) return null;
-  if (level === 'city') {
-    const rows = data.aggregates.byCityYear
-      .filter((r) => r.adcode === Number(id) && r.year >= 2000 && r.year <= 2019)
-      .sort((a, b) => a.year - b.year);
-    const fc = forecastRegion(level, Number(id), 3);
-    return {
-      labels: rows.map((r) => String(r.year)),
-      values: rows.map((r) => r.total),
-      forecast: fc ? fc.forecast : []
-    };
-  }
-  let records;
-  records = data.aggregates.byProvinceMonth.filter((r) => r.adcode === Number(id));
-  const map = buildMonthlySeries(records, 'adcode');
-  const series = map.get(Number(id));
+  const numericId = Number(id);
+  if (!numericId) return null;
+  const actualLevel = level === 'city' ? 'city' : 'province';
+  const series = seriesFor(actualLevel, numericId);
   if (!series) return null;
-  const labels = [];
-  const values = [];
-  for (let i = 0; i < N_MONTHS; i++) {
-    const m = monthAt(i);
-    labels.push(`${m.year}-${String(m.month).padStart(2, '0')}`);
-    values.push(series[i]);
-  }
-  const fc = forecastRegion(level, Number(id), 3);
-  return { labels, values, forecast: fc ? fc.forecast : [] };
+
+  const labels = series.map((_, i) => {
+    const tm = monthAt(i);
+    return `${tm.year}-${String(tm.month).padStart(2, '0')}`;
+  });
+  const fc = forecastRegion(actualLevel, numericId, 3);
+  return {
+    labels,
+    values: series.map((x) => Math.round(x)),
+    estimatedMonthly: actualLevel === 'city',
+    forecast: fc ? fc.forecast : []
+  };
 }
 
-module.exports = { predict, seriesForRegion, holdoutQuality, LEVELS };
+module.exports = {
+  predict,
+  seriesForRegion,
+  holdoutQuality,
+  LEVELS,
+  _internal: {
+    provinceMonthlySeries,
+    cityMonthlySeries,
+    coreForecast,
+    mape,
+    monthAt
+  }
+};
