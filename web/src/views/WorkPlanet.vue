@@ -14,7 +14,7 @@
         </a-avatar>
         <div class="hello-text">
           <h2 style="margin: 0">{{ greeting }}！{{ user.name }}</h2>
-          <div class="hello-meta">{{ todayText }} ｜ 数据更新：{{ dataUpdated }}</div>
+          <div class="hello-meta">{{ todayText }} ｜ 演示数据生成：{{ dataUpdated }}</div>
         </div>
         <a-tag color="blue" style="margin-left: auto">{{ metaLabel }}</a-tag>
       </div>
@@ -24,7 +24,7 @@
       <a-col :span="6">
         <div class="kpi">
           <div class="kpi-num">{{ overview.total || 0 }}</div>
-          <div class="kpi-label">全国案件总量</div>
+          <div class="kpi-label">裁判文书案件样本总量</div>
         </div>
       </a-col>
       <a-col :span="6">
@@ -42,35 +42,35 @@
       <a-col :span="6">
         <div class="kpi">
           <div class="kpi-num" :style="{ color: changeColor }">{{ changeText }}</div>
-          <div class="kpi-label">下月预测变化</div>
+          <div class="kpi-label">下一期历史预测变化</div>
         </div>
       </a-col>
     </a-row>
 
     <a-row :gutter="16">
       <a-col :span="16">
-        <a-card title="全国年度发案趋势" size="small" :bordered="false" style="margin-bottom: 16px" :loading="loading">
+        <a-card title="全国裁判文书案件样本年度趋势" size="small" :bordered="false" style="margin-bottom: 16px" :loading="loading">
           <Chart :option="yearOption" style="height: 260px" />
         </a-card>
         <a-row :gutter="16">
           <a-col :span="12">
-            <a-card title="高发省份 TOP 8" size="small" :bordered="false" :loading="loading">
+            <a-card title="省份样本量 TOP 8" size="small" :bordered="false" :loading="loading">
               <Chart :option="provinceOption" style="height: 260px" />
             </a-card>
           </a-col>
           <a-col :span="12">
-            <a-card title="高发地市 TOP 8" size="small" :bordered="false" :loading="loading">
+            <a-card title="地市样本量 TOP 8" size="small" :bordered="false" :loading="loading">
               <Chart :option="cityOption" style="height: 260px" />
             </a-card>
           </a-col>
         </a-row>
       </a-col>
       <a-col :span="8">
-        <a-card title="案件类型分布" size="small" :bordered="false" style="margin-bottom: 16px" :loading="loading">
+        <a-card title="案件类型样本分布" size="small" :bordered="false" style="margin-bottom: 16px" :loading="loading">
           <Chart :option="typeOption" style="height: 260px" />
         </a-card>
         <a-card
-          title="下月预警速览（点击查看预测）"
+          title="下一期预警演示（点击查看预测）"
           size="small"
           :bordered="false"
           :loading="loading"
@@ -79,7 +79,7 @@
           <div v-for="(w, i) in warnings" :key="i" class="warn-row warn-clickable" @click="goWarn(w)">
             <span class="warn-dot" :style="{ background: w.color }"></span>
             <span class="warn-name">{{ w.name }}</span>
-            <span class="warn-value">{{ w.value }} 起</span>
+            <span class="warn-value">{{ w.value }} 条</span>
             <span class="warn-label">{{ w.label }}</span>
           </div>
           <div v-if="!warnings.length" class="empty-tip">暂无预警</div>
@@ -99,7 +99,7 @@
           <div class="algo-title">数据说明</div>
           <div class="algo-row">
             <span class="algo-label">数据来源</span>
-            <span>中国裁判文书网公开判决文书（LLM 提取整理，Scientific Data 2025）</span>
+            <span>公开裁判文书经 LLM 提取整理的数据集（Scientific Data 2025）</span>
           </div>
           <div class="algo-row">
             <span class="algo-label">时间范围</span>
@@ -118,11 +118,15 @@
           <div class="algo-title">算法说明</div>
           <div class="algo-row">
             <span class="algo-label">模型方法</span>
-            <span>{{ pred.model || "STL 季节分解 + 趋势外推 + 空间邻域平滑" }}</span>
+            <span>{{ pred.model || "Seasonal-Trend Lite + 空间邻域平滑" }}</span>
           </div>
           <div class="algo-row">
             <span class="algo-label">预测粒度</span>
-            <span>省级按月预测 / 地市级按年预测</span>
+            <span>省级真实月序列 / 地市估算月序列</span>
+          </div>
+          <div class="algo-row">
+            <span class="algo-label">训练截止</span>
+            <span>{{ pred.trainingThrough || "2018-12" }}</span>
           </div>
           <div class="algo-row">
             <span class="algo-label">回测精度</span>
@@ -135,9 +139,11 @@
         </a-col>
       </a-row>
       <div class="algo-levels">
-        预警分级：红色（高位异常/快速增长）＞ 橙色（明显上升）＞ 黄色（关注）＞ 绿色（正常），并叠加趋势方向修正。
+        四色等级仅用于可视化演示：红色 ＞ 橙色 ＞ 黄色 ＞ 绿色。它不是任何公安机关正式预警标准。
       </div>
-      <div class="algo-note">说明：本系统为测试演示用途，算法与数据仅用于功能验证，不代表真实犯罪情况。</div>
+      <div class="algo-note">
+        说明：本系统为历史数据教学 / 演示用途。裁判文书样本量不等同于真实犯罪发生率，模型输出不用于现实警务决策。
+      </div>
     </a-card>
   </div>
 </template>
@@ -147,6 +153,13 @@ import { defineComponent } from "vue";
 import api from "@/api";
 import Chart from "@/components/Chart.vue";
 import { useAppStore } from "@/store";
+
+const LEVEL_PRIORITY: Record<string, number> = {
+  red: 4,
+  orange: 3,
+  yellow: 2,
+  green: 1
+};
 
 export default defineComponent({
   name: "WorkPlanet",
@@ -162,7 +175,7 @@ export default defineComponent({
       loading: true,
       nowText: "",
       timer: null as ReturnType<typeof setInterval> | null,
-      disclaimer: "本系统为测试演示用途，数据仅用于功能验证，不代表真实犯罪情况。",
+      disclaimer: "历史数据教学 / 演示系统：裁判文书样本不代表现实犯罪发生率，预测与预警等级不用于真实警务决策。",
       pred: {} as any
     };
   },
@@ -206,11 +219,11 @@ export default defineComponent({
     qualityText() {
       const q = this.pred && this.pred.quality;
       if (!q || q.accuracy === null || q.accuracy === undefined) return "--";
-      return `2018 年滚动回测精度约 ${q.accuracy}%（MAPE ${q.mape}%）`;
+      return `2018 年留出集精度约 ${q.accuracy}%（MAPE ${q.mape}%）`;
     },
     metaLabel() {
       const m = this.meta && this.meta.data;
-      return m ? (m.source === "placeholder" ? "模拟数据" : "来自裁判文书网") : "加载中";
+      return m ? (m.source === "placeholder" ? "模拟数据" : "公开历史数据") : "加载中";
     },
     changeText() {
       const f = this.overview.forecast || {};
@@ -256,11 +269,11 @@ export default defineComponent({
         this.buildRank(overview.topCities || [], false);
         this.warnings = (pred.items || [])
           .filter((x) => x.forecast[0].level !== "green")
-          .sort(
-            (a, b) =>
-              (a.forecast[0].level === "red" ? 1 : 0) - (b.forecast[0].level === "red" ? 1 : 0) ||
-              b.forecast[0].value - a.forecast[0].value
-          )
+          .sort((a, b) => {
+            const pa = LEVEL_PRIORITY[a.forecast[0].level] || 0;
+            const pb = LEVEL_PRIORITY[b.forecast[0].level] || 0;
+            return pb - pa || b.forecast[0].value - a.forecast[0].value;
+          })
           .slice(0, 8)
           .map((x) => ({
             id: x.id,
@@ -286,15 +299,15 @@ export default defineComponent({
             const item = p && p[0];
             if (!item) return "";
             const total = this.overview.total || 1;
-            return `${item.axisValue}年：${item.value.toLocaleString()} 起（占总量 ${((item.value / total) * 100).toFixed(1)}%）`;
+            return `${item.axisValue}年：${item.value.toLocaleString()} 条（占当前数据集 ${((item.value / total) * 100).toFixed(1)}%）`;
           }
         },
         grid: { left: 44, right: 14, top: 20, bottom: 28 },
         xAxis: { type: "category", data: rows.map((r) => r.year) },
-        yAxis: { type: "value" },
+        yAxis: { type: "value", name: "文书样本量", nameTextStyle: { fontSize: 10 } },
         series: [
           {
-            name: "案件数",
+            name: "文书样本量",
             type: "bar",
             data: rows.map((r) => r.total),
             itemStyle: {
@@ -338,7 +351,7 @@ export default defineComponent({
       const opt = {
         tooltip: { trigger: "axis" },
         grid: { left: 56, right: 16, top: 8, bottom: 24 },
-        xAxis: { type: "value" },
+        xAxis: { type: "value", name: "样本量", nameTextStyle: { fontSize: 10 } },
         yAxis: { type: "category", data: data.map((x) => x.name), axisLabel: { fontSize: 10 } },
         series: [
           {
@@ -367,18 +380,9 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.hello {
-  display: flex;
-  align-items: center;
-}
-.hello-text {
-  margin-left: 16px;
-}
-.hello-meta {
-  color: #999;
-  font-size: 12px;
-  margin-top: 4px;
-}
+.hello { display: flex; align-items: center; }
+.hello-text { margin-left: 16px; }
+.hello-meta { color: #999; font-size: 12px; margin-top: 4px; }
 .kpi {
   background: linear-gradient(135deg, #f0f5ff, #fff);
   border: 1px solid #e8e8e8;
@@ -386,16 +390,8 @@ export default defineComponent({
   text-align: center;
   padding: 18px 8px;
 }
-.kpi-num {
-  font-size: 26px;
-  font-weight: 700;
-  color: #1677ff;
-}
-.kpi-label {
-  color: #666;
-  font-size: 13px;
-  margin-top: 4px;
-}
+.kpi-num { font-size: 26px; font-weight: 700; color: #1677ff; }
+.kpi-label { color: #666; font-size: 13px; margin-top: 4px; }
 .warn-row {
   display: flex;
   align-items: center;
@@ -404,60 +400,16 @@ export default defineComponent({
   font-size: 12px;
   line-height: 20px;
 }
-.warn-row:last-child {
-  border-bottom: none;
-}
-.warn-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  margin-right: 8px;
-}
-.warn-name {
-  flex: 1;
-}
-.warn-clickable {
-  cursor: pointer;
-}
-.warn-clickable:hover {
-  background: #f0f5ff;
-}
-.warn-value {
-  margin-right: 8px;
-  font-weight: 600;
-}
-.warn-label {
-  color: #999;
-  font-size: 12px;
-}
-.algo-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1668dc;
-  margin-bottom: 8px;
-}
-.algo-row {
-  display: flex;
-  gap: 10px;
-  padding: 4px 0;
-  font-size: 13px;
-  color: rgba(0, 0, 0, 0.75);
-}
-.algo-label {
-  flex-shrink: 0;
-  width: 64px;
-  color: #999;
-}
-.algo-levels {
-  margin-top: 12px;
-  padding: 8px 12px;
-  background: #f0f5ff;
-  font-size: 13px;
-  color: rgba(0, 0, 0, 0.75);
-}
-.algo-note {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #999;
-}
+.warn-row:last-child { border-bottom: none; }
+.warn-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+.warn-name { flex: 1; }
+.warn-clickable { cursor: pointer; }
+.warn-clickable:hover { background: #f0f5ff; }
+.warn-value { margin-right: 8px; font-weight: 600; }
+.warn-label { color: #999; font-size: 12px; }
+.algo-title { font-size: 14px; font-weight: 600; color: #1668dc; margin-bottom: 8px; }
+.algo-row { display: flex; gap: 10px; padding: 4px 0; font-size: 13px; color: rgba(0, 0, 0, 0.75); }
+.algo-label { flex-shrink: 0; width: 64px; color: #999; }
+.algo-levels { margin-top: 12px; padding: 8px 12px; background: #f0f5ff; font-size: 13px; color: rgba(0, 0, 0, 0.75); }
+.algo-note { margin-top: 8px; font-size: 12px; color: #999; }
 </style>
