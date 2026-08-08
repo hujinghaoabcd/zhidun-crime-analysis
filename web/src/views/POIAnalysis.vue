@@ -4,46 +4,45 @@
       type="info"
       show-icon
       style="margin-bottom: 10px"
-      message="POI 繁华度指数为演示近似值（综合人口与城市规模），用于分析商业繁华度与街头犯罪的关系"
+      message="POI 繁华度指数为演示近似值（综合人口与城市规模），仅用于探索该指标与裁判文书案件样本量之间的统计关系；不代表真实 POI 密度或因果效应。"
     />
 
     <a-row :gutter="12" class="kpi-row">
       <a-col :span="8">
         <div class="kpi">
           <div class="kpi-num">{{ corr }}</div>
-          <div class="kpi-label">POI-案件相关系数</div>
+          <div class="kpi-label">POI指数-样本量相关系数</div>
         </div>
       </a-col>
       <a-col :span="8">
         <div class="kpi">
           <div class="kpi-num">{{ topPoi.name }}</div>
-          <div class="kpi-label">繁华度最高省份</div>
+          <div class="kpi-label">繁华度指标最高省份</div>
         </div>
       </a-col>
       <a-col :span="8">
         <div class="kpi">
           <div class="kpi-num">{{ topCrime.name }}</div>
-          <div class="kpi-label">案件最高省份</div>
+          <div class="kpi-label">文书样本最多省份</div>
         </div>
       </a-col>
     </a-row>
 
     <a-row :gutter="12">
       <a-col :span="14">
-        <a-card size="small" title="POI 繁华度 × 案件规模" :bordered="false">
+        <a-card size="small" title="POI 繁华度指标 × 裁判文书案件样本量" :bordered="false">
           <Chart :option="scatterOption" style="height: 250px" />
         </a-card>
       </a-col>
       <a-col :span="10">
-        <a-card size="small" title="POI 繁华度 TOP 10" :bordered="false">
+        <a-card size="small" title="POI 繁华度指标 TOP 10" :bordered="false">
           <Chart :option="poiOption" style="height: 250px" />
         </a-card>
       </a-col>
     </a-row>
 
-    <div style="margin-top: 10px; color: #666; font-size: 12px; line-height: 1.8">
-      结论：商业/公共服务设施密度（POI）与街头犯罪呈正相关，繁华商圈既是人流集聚区也是盗窃、抢夺高发区；
-      建议对 POI 指数 ≥ 70 的地区加密巡逻与视频布控。
+    <div class="analysis-note">
+      解释限制：该图只展示当前演示指标与文书样本量的相关性。人口规模、商业活动、数据公开和样本覆盖等都可能造成共同变化，因此不能据此推断“POI 导致犯罪”，也不能直接形成现实巡逻或视频布控阈值。
     </div>
   </div>
 </template>
@@ -71,7 +70,7 @@ export default defineComponent({
   },
   mounted() {
     this.store.setShowSlide(true);
-    this.store.setCardTitle("POI 繁华度分析（全国）");
+    this.store.setCardTitle("POI 繁华度分析（探索性演示）");
     this.store.setMapConfig({ mode: "social", indicator: "poi" });
     this.load();
   },
@@ -92,11 +91,11 @@ export default defineComponent({
     buildScatter(pts: any[]) {
       this.scatterOption = {
         tooltip: {
-          formatter: (p: any) => `${p.data.name}<br>POI: ${p.data.poi}<br>案件: ${p.data.crime} 起`
+          formatter: (p: any) => `${p.data.name}<br>POI 指标: ${p.data.poi}<br>文书样本: ${p.data.crime} 条`
         },
         grid: { left: 50, right: 16, top: 12, bottom: 30 },
-        xAxis: { type: "value", name: "POI 繁华度指数", nameTextStyle: { fontSize: 10 } },
-        yAxis: { type: "value", name: "案件数", nameTextStyle: { fontSize: 10 } },
+        xAxis: { type: "value", name: "POI 繁华度指标", nameTextStyle: { fontSize: 10 } },
+        yAxis: { type: "value", name: "文书样本量", nameTextStyle: { fontSize: 10 } },
         series: [
           {
             type: "scatter",
@@ -108,20 +107,18 @@ export default defineComponent({
       };
     },
     buildPoi(pts: any[]) {
-      const data = [...pts].sort((a, b) => b.poi - a.poi).slice(0, 10).reverse();
+      const rows = [...pts].sort((a, b) => b.poi - a.poi).slice(0, 10).reverse();
       this.poiOption = {
         tooltip: { trigger: "axis" },
         grid: { left: 58, right: 16, top: 8, bottom: 24 },
         xAxis: { type: "value", max: 100 },
-        yAxis: { type: "category", data: data.map((x) => x.name), axisLabel: { fontSize: 10 } },
+        yAxis: { type: "category", data: rows.map((x) => x.name), axisLabel: { fontSize: 10 } },
         series: [
           {
             type: "bar",
             barWidth: 11,
-            data: data.map((x) => x.poi),
-            itemStyle: {
-              color: (p: any) => (p.value >= 70 ? "#fa8c16" : "#52c41a")
-            }
+            data: rows.map((x) => x.poi),
+            itemStyle: { color: "#52c41a" }
           }
         ]
       };
@@ -132,9 +129,7 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.kpi-row {
-  margin-bottom: 10px;
-}
+.kpi-row { margin-bottom: 10px; }
 .kpi {
   background: linear-gradient(135deg, #f0f5ff, #fff);
   border: 1px solid #e8e8e8;
@@ -142,14 +137,7 @@ export default defineComponent({
   text-align: center;
   padding: 10px 4px;
 }
-.kpi-num {
-  font-size: 18px;
-  font-weight: 700;
-  color: #389e0d;
-}
-.kpi-label {
-  color: #666;
-  font-size: 12px;
-  margin-top: 2px;
-}
+.kpi-num { font-size: 18px; font-weight: 700; color: #389e0d; }
+.kpi-label { color: #666; font-size: 12px; margin-top: 2px; }
+.analysis-note { margin-top: 10px; color: #666; font-size: 12px; line-height: 1.8; }
 </style>
