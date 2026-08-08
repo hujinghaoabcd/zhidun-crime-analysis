@@ -4,46 +4,45 @@
       type="info"
       show-icon
       style="margin-bottom: 10px"
-      message="房价为各省级行政区公开均价的近似值（万元/㎡），用于演示“房价-街头犯罪”的倒U形关系"
+      message="房价为各省级行政区公开均价的演示近似值，仅用于探索房价指标与裁判文书案件样本之间的统计关系；相关性不代表因果关系。"
     />
 
     <a-row :gutter="12" class="kpi-row">
       <a-col :span="8">
         <div class="kpi">
           <div class="kpi-num">{{ corr }}</div>
-          <div class="kpi-label">房价-案件相关系数</div>
+          <div class="kpi-label">房价-样本量相关系数</div>
         </div>
       </a-col>
       <a-col :span="8">
         <div class="kpi">
           <div class="kpi-num">{{ topPrice.name }}</div>
-          <div class="kpi-label">房价最高省份</div>
+          <div class="kpi-label">房价指标最高省份</div>
         </div>
       </a-col>
       <a-col :span="8">
         <div class="kpi">
           <div class="kpi-num">{{ peak.name }}</div>
-          <div class="kpi-label">案件峰值省份</div>
+          <div class="kpi-label">文书样本最多省份</div>
         </div>
       </a-col>
     </a-row>
 
     <a-row :gutter="12">
       <a-col :span="14">
-        <a-card size="small" title="房价 × 案件规模（省份）" :bordered="false">
+        <a-card size="small" title="房价指标 × 裁判文书案件样本量（省份）" :bordered="false">
           <Chart :option="scatterOption" style="height: 250px" />
         </a-card>
       </a-col>
       <a-col :span="10">
-        <a-card size="small" title="房价 TOP 10（万元/㎡）" :bordered="false">
+        <a-card size="small" title="房价指标 TOP 10（万元/㎡）" :bordered="false">
           <Chart :option="priceOption" style="height: 250px" />
         </a-card>
       </a-col>
     </a-row>
 
-    <div style="margin-top: 10px; color: #666; font-size: 12px; line-height: 1.8">
-      结论：房价与案件呈倒 U 形——超高房价地区（京沪）治安投入高、发案相对受控；
-      中等房价的人口流入大省（广东、浙江、山东）案件最集中。
+    <div class="analysis-note">
+      解释限制：图中只能说明当前演示指标与裁判文书样本量之间的统计关联。地区人口规模、城市化、文书公开与数据采集完整度等因素均可能影响结果，不能据此判断房价对犯罪的因果作用或现实治安水平。
     </div>
   </div>
 </template>
@@ -71,7 +70,7 @@ export default defineComponent({
   },
   mounted() {
     this.store.setShowSlide(true);
-    this.store.setCardTitle("房价水平分析（全国）");
+    this.store.setCardTitle("房价水平分析（探索性演示）");
     this.store.setMapConfig({ mode: "social", indicator: "house" });
     this.load();
   },
@@ -94,11 +93,11 @@ export default defineComponent({
     buildScatter(pts: any[]) {
       this.scatterOption = {
         tooltip: {
-          formatter: (p: any) => `${p.data.name}<br>房价: ${p.data.price} 万/㎡<br>案件: ${p.data.crime} 起`
+          formatter: (p: any) => `${p.data.name}<br>房价指标: ${p.data.price} 万/㎡<br>文书样本: ${p.data.crime} 条`
         },
         grid: { left: 50, right: 16, top: 12, bottom: 30 },
-        xAxis: { type: "value", name: "均价（万元/㎡）", nameTextStyle: { fontSize: 10 } },
-        yAxis: { type: "value", name: "案件数", nameTextStyle: { fontSize: 10 } },
+        xAxis: { type: "value", name: "均价指标（万元/㎡）", nameTextStyle: { fontSize: 10 } },
+        yAxis: { type: "value", name: "文书样本量", nameTextStyle: { fontSize: 10 } },
         series: [
           {
             type: "scatter",
@@ -110,17 +109,17 @@ export default defineComponent({
       };
     },
     buildPrice(pts: any[]) {
-      const data = [...pts].sort((a, b) => b.price - a.price).slice(0, 10).reverse();
+      const rows = [...pts].sort((a, b) => b.price - a.price).slice(0, 10).reverse();
       this.priceOption = {
         tooltip: { trigger: "axis", formatter: (p: any) => `${p[0].name}<br>${p[0].value} 万/㎡` },
         grid: { left: 58, right: 16, top: 8, bottom: 24 },
         xAxis: { type: "value" },
-        yAxis: { type: "category", data: data.map((x) => x.name), axisLabel: { fontSize: 10 } },
+        yAxis: { type: "category", data: rows.map((x) => x.name), axisLabel: { fontSize: 10 } },
         series: [
           {
             type: "bar",
             barWidth: 11,
-            data: data.map((x) => x.price),
+            data: rows.map((x) => x.price),
             itemStyle: { color: "#722ed1" }
           }
         ]
@@ -132,9 +131,7 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.kpi-row {
-  margin-bottom: 10px;
-}
+.kpi-row { margin-bottom: 10px; }
 .kpi {
   background: linear-gradient(135deg, #f0f5ff, #fff);
   border: 1px solid #e8e8e8;
@@ -142,14 +139,7 @@ export default defineComponent({
   text-align: center;
   padding: 10px 4px;
 }
-.kpi-num {
-  font-size: 18px;
-  font-weight: 700;
-  color: #722ed1;
-}
-.kpi-label {
-  color: #666;
-  font-size: 12px;
-  margin-top: 2px;
-}
+.kpi-num { font-size: 18px; font-weight: 700; color: #722ed1; }
+.kpi-label { color: #666; font-size: 12px; margin-top: 2px; }
+.analysis-note { margin-top: 10px; color: #666; font-size: 12px; line-height: 1.8; }
 </style>
