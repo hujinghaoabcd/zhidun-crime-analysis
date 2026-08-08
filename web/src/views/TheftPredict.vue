@@ -22,7 +22,7 @@
       type="info"
       show-icon
       style="margin-bottom: 10px"
-      message="地市级预测请先选择省份，地图将下钻到该省各地市"
+      message="地市原始聚合以年度总量为主；本页按所在省份的月度季节分布生成估算月度序列，仅用于演示月尺度下钻。"
     />
 
     <a-row :gutter="12" class="kpi-row">
@@ -35,7 +35,7 @@
       <a-col :span="6">
         <div class="kpi">
           <div class="kpi-num" :style="{ color: changeColor }">{{ changeText }}</div>
-          <div class="kpi-label">{{ level === "city" ? "年度变化" : "环比变化" }}</div>
+          <div class="kpi-label">环比变化</div>
         </div>
       </a-col>
       <a-col :span="6">
@@ -62,23 +62,23 @@
       type="info"
       show-icon
       style="margin-bottom: 10px"
-      :message="'模型：' + (result.model || '') + '；预测起始：' + (result.forecastFrom || '')"
+      :message="modelMessage"
     />
 
-    <div v-if="modelsLoading" class="model-waiting model-waiting-top">
+    <div v-if="modelsLoading && level === 'province'" class="model-waiting model-waiting-top">
       <div class="model-chain">
-        <span class="chain-node"><a-icon type="experiment" />SARIMA</span>
+        <span class="chain-node"><a-icon type="experiment" />SARIMA-Lite</span>
         <i class="chain-line"></i>
-        <span class="chain-node"><a-icon type="tool" />STARMA</span>
+        <span class="chain-node"><a-icon type="tool" />STARMA-Lite</span>
         <i class="chain-line"></i>
-        <span class="chain-node"><a-icon type="bulb" />Prophet</span>
+        <span class="chain-node"><a-icon type="bulb" />Prophet-Lite</span>
         <i class="chain-line"></i>
-        <span class="chain-node"><a-icon type="code" />XGBoost</span>
+        <span class="chain-node"><a-icon type="code" />XGB-Lite</span>
         <i class="chain-line"></i>
         <span class="chain-node ens"><a-icon type="api" />集成</span>
       </div>
       <div class="model-waiting-text">
-        <a-icon type="loading" /> 正在联动各模型计算预测，约需 15 秒…
+        <a-icon type="loading" /> 正在计算省级 Lite 模型与 2018 留出集指标…
       </div>
       <div class="model-progress"><i></i></div>
     </div>
@@ -112,14 +112,22 @@
       </a-col>
     </a-row>
 
-    <a-collapse v-model:activeKey="modelPanelKeys" style="margin-top: 12px">
-      <a-collapse-panel key="models" header="多模型对比（2018 年滚动回测）">
+    <a-alert
+      v-if="level === 'city'"
+      type="warning"
+      show-icon
+      style="margin-top: 12px"
+      message="地市月度序列是估算口径，因此不展示 SARIMA-Lite / STARMA-Lite / Prophet-Lite / XGBoost-Lite 的独立月度精度比较。"
+    />
+
+    <a-collapse v-else v-model:activeKey="modelPanelKeys" style="margin-top: 12px">
+      <a-collapse-panel key="models" header="多模型对比（2018 年留出回测）">
         <div v-if="modelsLoading" class="empty-tip">模型计算中，请稍候…</div>
         <template v-else>
           <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px">
             <span style="font-size: 13px; color: #666">地图模型：</span>
-            <a-select v-model:value="modelChoice" style="width: 230px" @change="onModelChange">
-              <a-select-option value="ensemble">集成预测（加权平均）</a-select-option>
+            <a-select v-model:value="modelChoice" style="width: 250px" @change="onModelChange">
+              <a-select-option value="ensemble">集成预测（按 MAPE 倒数加权）</a-select-option>
               <a-select-option v-for="m in modelRows" :key="m.key" :value="m.key">{{ m.name }}</a-select-option>
             </a-select>
           </div>
@@ -132,13 +140,13 @@
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'accuracy'">
-                <b :style="{ color: record.best ? '#1668dc' : undefined }">{{ record.accuracy }}%</b>
+                <b :style="{ color: record.best ? '#1668dc' : undefined }">{{ record.accuracy === '--' ? '--' : record.accuracy + '%' }}</b>
                 <a-tag v-if="record.best" color="blue" style="margin-left: 6px">最佳</a-tag>
               </template>
             </template>
           </a-table>
           <div style="margin-top: 8px; color: #999; font-size: 12px">
-            说明：各模型使用 2018 年全年滚动回测对比；当前主模型为 STL + 趋势外推 + 空间平滑，多模型结果可用于后续集成切换。
+            说明：训练截至 2017-12，统一预测 2018-01 ~ 2018-12 计算 MAPE；完整演示模型使用数据截至 2018-12，下一期从 2019-01 开始。所有模型均为 Node.js Lite 演示实现。
           </div>
         </template>
       </a-collapse-panel>
@@ -185,7 +193,7 @@ export default defineComponent({
         { title: "模型", dataIndex: "name", key: "name" },
         { title: "回测精度", dataIndex: "accuracy", key: "accuracy", width: 110, align: "right" },
         { title: "MAPE", dataIndex: "mape", key: "mape", width: 90, align: "right" },
-        { title: "下月均值预测", dataIndex: "next", key: "next", width: 110, align: "right" }
+        { title: "下一期均值预测", dataIndex: "next", key: "next", width: 120, align: "right" }
       ]
     };
   },
@@ -194,7 +202,13 @@ export default defineComponent({
   },
   computed: {
     periodLabel() {
-      return this.level === "city" ? "下一年" : "下月";
+      return "下月";
+    },
+    modelMessage() {
+      const modelName = this.result.model || "";
+      const training = this.result.trainingThrough || "2018-12";
+      const forecast = this.result.forecastFrom || "2019-01";
+      return `模型：${modelName}；训练截止：${training}；历史预测演示起始：${forecast}`;
     },
     changeText() {
       const v = this.summary.changePct;
@@ -208,7 +222,7 @@ export default defineComponent({
   },
   mounted() {
     this.store.setShowSlide(true);
-    this.store.setCardTitle("犯罪预测与预警（全国）");
+    this.store.setCardTitle("犯罪预测与预警（历史数据演示）");
     const q = this.$route.query;
     if (q.region) this.initialRegion = Number(q.region);
     api.provinces().then((ps) => {
@@ -218,8 +232,8 @@ export default defineComponent({
   },
   methods: {
     onLevelChange() {
-      // antd-vue4 的 change 事件传的是事件对象，等级已由 v-model:value 更新
       this.selected = null;
+      this.modelChoice = "stl";
       this.load();
     },
     onProvinceChange(val: number | undefined) {
@@ -238,11 +252,7 @@ export default defineComponent({
         message.warning("地市级预测请先选择省份");
         return;
       }
-      const params = {
-        level: this.level,
-        months: 3,
-        top: 0
-      };
+      const params = { level: this.level, months: 3, top: 0 };
       this.store.setMapConfig({
         mode: "predict",
         level: this.level,
@@ -286,8 +296,13 @@ export default defineComponent({
       }
     },
     async loadModels() {
+      if (this.level === "city") {
+        this.modelsLoading = false;
+        this.modelRows = [];
+        this.modelData = null;
+        return;
+      }
       this.modelsLoading = true;
-      const started = Date.now();
       try {
         const res = await api.models({ level: this.level });
         this.modelData = res;
@@ -304,11 +319,7 @@ export default defineComponent({
       } catch (e) {
         console.error(e);
       } finally {
-        const elapsed = Date.now() - started;
-        const wait = Math.max(0, 3000 - elapsed);
-        setTimeout(() => {
-          this.modelsLoading = false;
-        }, wait);
+        this.modelsLoading = false;
       }
     },
     onModelChange() {
@@ -318,7 +329,7 @@ export default defineComponent({
       if (!this.modelData || this.level !== "province") return;
       let items;
       let summary;
-      let forecastFrom = "2020-01";
+      let forecastFrom = "2019-01";
       if (this.modelChoice === "stl") {
         items = this.modelData.itemsByModel.stl || this.modelData.ensemble;
         summary = this.modelData.stlSummary || this.clientSummary(items);
@@ -347,11 +358,7 @@ export default defineComponent({
         level: "province",
         province: null,
         city: null,
-        data: {
-          predictItems: items,
-          summary,
-          forecastFrom
-        }
+        data: { predictItems: items, summary, forecastFrom }
       });
     },
     clientSummary(items: any[]) {
@@ -369,13 +376,13 @@ export default defineComponent({
       };
     },
     async loadNationalSeries() {
-      const rows = await api.trend({ dimension: "month" });
+      const rows = (await api.trend({ dimension: "month" })).filter((r) => r.label <= "2018-12");
       const labels = rows.map((r) => r.label);
       const values = rows.map((r) => r.total);
       const fc = (this.result.items || []).reduce((s, x) => s + x.forecast[0].value, 0);
-      labels.push(this.result.forecastFrom);
+      labels.push(this.result.forecastFrom || "2019-01");
       values.push(fc);
-      this.seriesTitle = "全国月度案件趋势（含下月预测）";
+      this.seriesTitle = "全国月度案件趋势（完整历史期 + 下一期预测演示）";
       this.seriesOption = this.seriesChart(labels, values, true, 1);
     },
     async selectRegion(row: any) {
@@ -385,10 +392,10 @@ export default defineComponent({
         const labels = [...s.labels];
         const values = [...s.values];
         for (const f of s.forecast) {
-          labels.push(this.level === "city" ? String(f.year) : `${f.year}-${String(f.month).padStart(2, "0")}`);
+          labels.push(`${f.year}-${String(f.month).padStart(2, "0")}`);
           values.push(f.value);
         }
-        this.seriesTitle = `${row.name} 历史与预测`;
+        this.seriesTitle = `${row.name} 历史与预测${this.level === "city" ? "（月度为估算口径）" : ""}`;
         this.seriesOption = this.seriesChart(labels, values, true, s.forecast.length);
         this.store.patchMapConfig({
           data: {
@@ -445,12 +452,8 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.filter-bar {
-  margin-bottom: 10px;
-}
-.kpi-row {
-  margin-bottom: 10px;
-}
+.filter-bar { margin-bottom: 10px; }
+.kpi-row { margin-bottom: 10px; }
 .kpi {
   background: linear-gradient(135deg, #f0f5ff, #fff);
   border: 1px solid #e8e8e8;
@@ -458,22 +461,10 @@ export default defineComponent({
   text-align: center;
   padding: 10px 4px;
 }
-.kpi-num {
-  font-size: 20px;
-  font-weight: 700;
-  color: #d46b08;
-}
-.kpi-label {
-  color: #666;
-  font-size: 12px;
-  margin-top: 2px;
-}
-.theft-predict :deep(.ant-table-thead > tr > th) {
-  padding: 6px 8px !important;
-}
-.theft-predict :deep(.ant-table-tbody > tr > td) {
-  padding: 5px 8px !important;
-}
+.kpi-num { font-size: 20px; font-weight: 700; color: #d46b08; }
+.kpi-label { color: #666; font-size: 12px; margin-top: 2px; }
+.theft-predict :deep(.ant-table-thead > tr > th) { padding: 6px 8px !important; }
+.theft-predict :deep(.ant-table-tbody > tr > td) { padding: 5px 8px !important; }
 .model-waiting {
   padding: 26px 12px 22px;
   text-align: center;
@@ -482,25 +473,18 @@ export default defineComponent({
     linear-gradient(90deg, rgba(22, 104, 220, 0.04) 1px, transparent 1px);
   background-size: 100% 100%, 20px 20px, 20px 20px;
 }
-.model-waiting-top {
-  margin-bottom: 12px;
-}
-.model-chain {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 18px;
-}
+.model-waiting-top { margin-bottom: 12px; }
+.model-chain { display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
 .chain-node {
   position: relative;
   overflow: hidden;
-  width: 56px;
-  height: 56px;
+  width: 62px;
+  height: 62px;
   border-radius: 50%;
   border: 2px solid #91caff;
   background: radial-gradient(circle at 30% 30%, #f8fbff, #e7f0ff);
   color: #1668dc;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   display: flex;
   flex-direction: column;
@@ -510,10 +494,7 @@ export default defineComponent({
   animation: nodePulse 1.6s ease-in-out infinite;
   box-shadow: 0 2px 8px rgba(22, 104, 220, 0.18);
 }
-.chain-node .anticon {
-  font-size: 17px;
-  margin-bottom: 2px;
-}
+.chain-node .anticon { font-size: 17px; margin-bottom: 2px; }
 .chain-node::after {
   content: "";
   position: absolute;
@@ -569,41 +550,13 @@ export default defineComponent({
   border-bottom: 4px solid transparent;
 }
 @keyframes nodePulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(22, 104, 220, 0.35);
-  }
-  50% {
-    box-shadow: 0 0 0 9px rgba(22, 104, 220, 0);
-  }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 104, 220, 0.35); }
+  50% { box-shadow: 0 0 0 9px rgba(22, 104, 220, 0); }
 }
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-@keyframes lineFlow {
-  0% {
-    background-position: 0% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-.model-waiting-text {
-  color: #666;
-  font-size: 13px;
-}
-.model-progress {
-  width: 260px;
-  height: 5px;
-  margin: 10px auto 0;
-  background: #e8edf3;
-  overflow: hidden;
-}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+@keyframes lineFlow { 0% { background-position: 0% 0; } 100% { background-position: -200% 0; } }
+.model-waiting-text { color: #666; font-size: 13px; }
+.model-progress { width: 260px; height: 5px; margin: 10px auto 0; background: #e8edf3; overflow: hidden; }
 .model-progress i {
   display: block;
   width: 45%;
@@ -611,35 +564,14 @@ export default defineComponent({
   background: linear-gradient(90deg, #4d9fff, #1668dc);
   animation: barSlide 1.2s ease-in-out infinite;
 }
-@keyframes barSlide {
-  0% {
-    margin-left: -45%;
-  }
-  100% {
-    margin-left: 100%;
-  }
-}
+@keyframes barSlide { 0% { margin-left: -45%; } 100% { margin-left: 100%; } }
 @keyframes dotTravel {
-  0% {
-    left: 0;
-    opacity: 0;
-  }
-  15% {
-    opacity: 1;
-  }
-  100% {
-    left: calc(100% - 4px);
-    opacity: 0.3;
-  }
+  0% { left: 0; opacity: 0; }
+  15% { opacity: 1; }
+  100% { left: calc(100% - 4px); opacity: 0.3; }
 }
 @keyframes radarRing {
-  0% {
-    transform: scale(0.8);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1.5);
-    opacity: 0;
-  }
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(1.5); opacity: 0; }
 }
 </style>
