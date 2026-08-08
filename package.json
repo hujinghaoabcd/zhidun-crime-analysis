@@ -1,10 +1,22 @@
 {
   "name": "zhidun-crime-analysis",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "智盾 · 全国犯罪时空分析预警系统（演示）",
+  "description": "智盾 · 全国犯罪时空分析预警系统（历史数据演示）",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "demo": "node server/run-dev.js",
-    "server": "node server/index.js"
+    "dev": "node server/run-dev.js",
+    "server": "node server/index.js",
+    "build": "npm run build --workspace web",
+    "typecheck": "npm run typecheck --workspace web",
+    "test": "node --test server/tests/*.test.js",
+    "validate:data": "node server/scripts/validate-data.js",
+    "check": "npm run validate:data && npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
