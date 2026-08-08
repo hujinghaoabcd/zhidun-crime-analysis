@@ -5,6 +5,8 @@
  *
  * 注意：这些模型是为了浏览器/Node 演示而实现的轻量近似版本，
  * 并不是 statsmodels SARIMA、Meta Prophet 或官方 XGBoost 的封装。
+ * 2019 年数据明显不完整，因此统一使用 2000-01 ~ 2018-12 建模，
+ * 预测演示从 2019-01 开始。
  *
  *  - Seasonal Naive：季节朴素基准
  *  - SARIMA-Lite：季节差分 + 自回归
@@ -17,7 +19,7 @@
 const data = require('./national-data');
 
 const START_YEAR = 2000;
-const END_YEAR = 2019;
+const END_YEAR = 2018;
 const N = (END_YEAR - START_YEAR + 1) * 12;
 const HOLDOUT_YEAR = 2018;
 const HOLDOUT_START = (HOLDOUT_YEAR - START_YEAR) * 12;
@@ -51,7 +53,6 @@ function mean(arr) {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 }
 
-// ---------- 线性代数 ----------
 function ols(X, y, lambda = 0.1) {
   if (!X.length || !X[0].length) return [];
   const n = X.length;
@@ -89,7 +90,6 @@ function gauss(A, b) {
   return M.map((row) => row[n]);
 }
 
-// ---------- 模型 ----------
 function seasonalNaiveForecast(series, h) {
   const work = series.slice();
   const out = [];
@@ -183,7 +183,6 @@ function prophetLiteForecast(series, h) {
   return out;
 }
 
-// ---------- XGBoost-Lite（梯度提升回归树） ----------
 function buildFeatures(series, t) {
   return [
     series[t - 1] || 0,
@@ -268,7 +267,6 @@ function xgboostLiteForecast(series, h) {
   return out;
 }
 
-// ---------- 评估与集成 ----------
 function mape(preds, actuals) {
   let sum = 0;
   let n = 0;
@@ -282,7 +280,6 @@ function mape(preds, actuals) {
 }
 
 function runModel(name, fn, series) {
-  // 2018 年为完整留出集：训练截至 2017-12，预测 2018-01 ~ 2018-12。
   const train = series.slice(0, HOLDOUT_START);
   const actuals = series.slice(HOLDOUT_START, HOLDOUT_END);
   const preds = fn(train, 12);
@@ -314,7 +311,6 @@ function neighborSeries(adcode) {
 }
 
 function runAllModels(level) {
-  // 当前 Lite 多模型仅对省级月序列做严格同尺度比较。
   if (level !== 'province') {
     return {
       models: [],
@@ -329,7 +325,7 @@ function runAllModels(level) {
         normalCount: 0,
         regions: 0
       },
-      note: 'Lite 多模型比较当前仅支持省级月度序列。'
+      note: 'Lite 多模型比较当前仅支持省级真实月度序列。'
     };
   }
 
@@ -425,6 +421,8 @@ function runAllModels(level) {
       normalCount: count('green'),
       regions: ensemble.length
     },
+    trainingThrough: '2018-12',
+    forecastFrom: '2019-01',
     backtestWindow: '2018-01 ~ 2018-12',
     metric: 'MAPE (zero actuals excluded)'
   };
